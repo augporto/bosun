@@ -128,13 +128,14 @@ func (e *Expr) ExecuteState(s *State, T miniprofiler.Timer) (r *Results, queries
 func errRecover(errp *error) {
 	e := recover()
 	if e != nil {
-		slog.Infof("%s: %s", e, debug.Stack())
 		switch err := e.(type) {
 		case runtime.Error:
+			slog.Infof("%s: %s", e, debug.Stack())
 			panic(e)
 		case error:
 			*errp = err
 		default:
+			slog.Infof("%s: %s", e, debug.Stack())
 			panic(e)
 		}
 	}
@@ -168,6 +169,13 @@ func (s Scalar) Type() models.FuncType        { return models.TypeScalar }
 func (s Scalar) Value() interface{}           { return s }
 func (s Scalar) MarshalJSON() ([]byte, error) { return marshalFloat(float64(s)) }
 
+type String string
+
+func (s String) Type() models.FuncType { return models.TypeString }
+func (s String) Value() interface{}    { return s }
+
+//func (s String) MarshalJSON() ([]byte, error) { return json.Marshal(s) }
+
 // Series is the standard form within bosun to represent timeseries data.
 type Series map[time.Time]float64
 
@@ -180,6 +188,10 @@ func (s Series) MarshalJSON() ([]byte, error) {
 		r[fmt.Sprint(k.Unix())] = Scalar(v)
 	}
 	return json.Marshal(r)
+}
+
+func (a Series) Equal(b Series) bool {
+	return reflect.DeepEqual(a, b)
 }
 
 type ESQuery struct {
@@ -244,6 +256,52 @@ type Results struct {
 	IgnoreOtherUnjoined bool
 	// If non nil, will set any NaN value to it.
 	NaNValue *float64
+}
+
+// Equal inspects if two results have the same content
+// error will return why they are not equal if they
+// are not equal
+func (a *Results) Equal(b *Results) (bool, error) {
+	if len(a.Results) != len(b.Results) {
+		return false, fmt.Errorf("unequal number of results: length a: %v, length b: %v", len(a.Results), len(b.Results))
+	}
+	if a.IgnoreUnjoined != b.IgnoreUnjoined {
+		return false, fmt.Errorf("ignoreUnjoined flag does not match a: %v, b: %v", a.IgnoreUnjoined, b.IgnoreUnjoined)
+	}
+	if a.IgnoreOtherUnjoined != b.IgnoreOtherUnjoined {
+		return false, fmt.Errorf("ignoreUnjoined flag does not match a: %v, b: %v", a.IgnoreOtherUnjoined, b.IgnoreOtherUnjoined)
+	}
+	if a.NaNValue != a.NaNValue {
+		return false, fmt.Errorf("NaNValue does not match a: %v, b: %v", a.NaNValue, b.NaNValue)
+	}
+	sortedA := ResultSliceByGroup(a.Results)
+	sort.Sort(sortedA)
+	sortedB := ResultSliceByGroup(b.Results)
+	sort.Sort(sortedB)
+	for i, result := range sortedA {
+		for ic, computation := range result.Computations {
+			if computation != sortedB[i].Computations[ic] {
+				return false, fmt.Errorf("mismatched computation a: %v, b: %v", computation, sortedB[ic])
+			}
+		}
+		if !result.Group.Equal(sortedB[i].Group) {
+			return false, fmt.Errorf("mismatched groups a: %v, b: %v", result.Group, sortedB[i].Group)
+		}
+		switch t := result.Value.(type) {
+		case Number, Scalar, String:
+			if result.Value != sortedB[i].Value {
+				return false, fmt.Errorf("values do not match a: %v, b: %v", result.Value, sortedB[i].Value)
+			}
+		case Series:
+			if !t.Equal(sortedB[i].Value.(Series)) {
+				return false, fmt.Errorf("mismatched series in result (Group: %s) a: %v, b: %v", result.Group, t, sortedB[i].Value.(Series))
+			}
+		default:
+			panic(fmt.Sprintf("can't compare results with type %T", t))
+		}
+
+	}
+	return true, nil
 }
 
 type ResultSlice []*Result
@@ -473,6 +531,14 @@ func (e *State) walkBinary(node *parse.BinaryNode, T miniprofiler.Timer) *Result
 						s[k] = operate(node.OpStr, float64(v), bv)
 					}
 					value = s
+				case Series:
+					s := make(Series)
+					for k, av := range at {
+						if bv, ok := bt[k]; ok {
+							s[k] = operate(node.OpStr, av, bv)
+						}
+					}
+					value = s
 				default:
 					panic(ErrUnknownOp)
 				}
@@ -629,7 +695,16 @@ func (e *State) walkFunc(node *parse.FuncNode, T miniprofiler.Timer) *Results {
 			default:
 				panic(fmt.Errorf("expr: unknown func arg type"))
 			}
-			if f, ok := v.(float64); ok && node.F.Args[i] == models.TypeNumberSet {
+			var argType models.FuncType
+			if i >= len(node.F.Args) {
+				if !node.F.VArgs {
+					panic("expr: shouldn't be here, more args then expected and not variable argument type func")
+				}
+				argType = node.F.Args[node.F.VArgsPos]
+			} else {
+				argType = node.F.Args[i]
+			}
+			if f, ok := v.(float64); ok && argType == models.TypeNumberSet {
 				v = fromScalar(f)
 			}
 			in = append(in, reflect.ValueOf(v))
@@ -662,6 +737,9 @@ func extract(res *Results) interface{} {
 	}
 	if len(res.Results) == 1 && res.Results[0].Type() == models.TypeESIndexer {
 		return res.Results[0].Value.Value()
+	}
+	if len(res.Results) == 1 && res.Results[0].Type() == models.TypeString {
+		return string(res.Results[0].Value.Value().(String))
 	}
 	return res
 }

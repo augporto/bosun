@@ -2084,6 +2084,17 @@ var Query = (function () {
                 f.tagk = k;
                 that.gbFilters[k] = f;
             });
+            // Load filters from raw query and turn them into gb and nGbFilters.
+            // This makes links from other pages work (i.e. the expr page)
+            if (_.has(q, 'filters')) {
+                _.each(q.filters, function (filter) {
+                    if (filter.groupBy) {
+                        that.gbFilters[filter.tagk] = filter;
+                        return;
+                    }
+                    that.nGbFilters[filter.tagk] = filter;
+                });
+            }
         }
         this.setFilters();
         this.setDs();
@@ -2273,6 +2284,7 @@ bosunControllers.controller('GraphCtrl', ['$scope', '$http', '$location', '$rout
         $scope.setIndex = function (i) {
             $scope.index = i;
         };
+        var alphabet = "abcdefghijklmnopqrstuvwxyz".split("");
         if ($scope.annotateEnabled) {
             $http.get('/api/annotation/values/Owner')
                 .success(function (data) {
@@ -2362,7 +2374,7 @@ bosunControllers.controller('GraphCtrl', ['$scope', '$http', '$location', '$rout
         if ($scope.query_p.length == 0) {
             $scope.AddTab();
         }
-        $http.get('/api/metric')
+        $http.get('/api/metric' + "?since=" + moment().utc().subtract(2, "days").unix())
             .success(function (data) {
             $scope.metrics = data;
         })
@@ -2503,6 +2515,13 @@ bosunControllers.controller('GraphCtrl', ['$scope', '$http', '$location', '$rout
                     $scope.warning = '';
                 }
                 $scope.queries = data.Queries;
+                $scope.exprText = "";
+                _.each($scope.queries, function (q, i) {
+                    $scope.exprText += "$" + alphabet[i] + " = " + q + "\n";
+                    if (i == $scope.queries.length - 1) {
+                        $scope.exprText += "avg($" + alphabet[i] + ")";
+                    }
+                });
                 $scope.running = '';
                 $scope.error = '';
                 var u = $location.absUrl();

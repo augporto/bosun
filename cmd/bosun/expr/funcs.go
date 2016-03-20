@@ -272,6 +272,11 @@ var builtins = map[string]parse.Func{
 		Return: models.TypeScalar,
 		F:      Duration,
 	},
+	"tod": {
+		Args:   []models.FuncType{models.TypeScalar},
+		Return: models.TypeString,
+		F:      ToDuration,
+	},
 	"des": {
 		Args:   []models.FuncType{models.TypeSeriesSet, models.TypeScalar, models.TypeScalar},
 		Return: models.TypeSeriesSet,
@@ -308,6 +313,12 @@ var builtins = map[string]parse.Func{
 		Tags:   tagFirst,
 		F:      DropNA,
 	},
+	"dropbool": {
+		Args:   []models.FuncType{models.TypeSeriesSet, models.TypeSeriesSet},
+		Return: models.TypeSeriesSet,
+		Tags:   tagFirst,
+		F:      DropBool,
+	},
 	"epoch": {
 		Args:   []models.FuncType{},
 		Return: models.TypeScalar,
@@ -331,6 +342,15 @@ var builtins = map[string]parse.Func{
 		Tags:   tagFirst,
 		F:      NV,
 	},
+	"series": {
+		Args:      []models.FuncType{models.TypeString, models.TypeScalar},
+		VArgs:     true,
+		VArgsPos:  1,
+		VArgsOmit: true,
+		Return:    models.TypeSeriesSet,
+		Tags:      tagFirst,
+		F:         SeriesFunc,
+	},
 	"sort": {
 		Args:   []models.FuncType{models.TypeNumberSet, models.TypeString},
 		Return: models.TypeNumberSet,
@@ -352,6 +372,49 @@ var builtins = map[string]parse.Func{
 	},
 }
 
+func SeriesFunc(e *State, T miniprofiler.Timer, tags string, pairs ...float64) (*Results, error) {
+	if len(pairs)%2 != 0 {
+		return nil, fmt.Errorf("uneven number of time stamps and values")
+	}
+	group, err := opentsdb.ParseTags(tags)
+	if err != nil {
+		return nil, fmt.Errorf("unable to parse tags: %v", err)
+	}
+	series := make(Series)
+	for i := 0; i < len(pairs); i += 2 {
+		series[time.Unix(int64(pairs[i]), 0)] = pairs[i+1]
+	}
+	return &Results{
+		Results: []*Result{
+			{
+				Value: series,
+				Group: group,
+			},
+		},
+	}, nil
+}
+
+func DropBool(e *State, T miniprofiler.Timer, target *Results, filter *Results) (*Results, error) {
+	res := Results{}
+	unions := e.union(target, filter, "dropbool union")
+	for _, union := range unions {
+		aSeries := union.A.Value().(Series)
+		bSeries := union.B.Value().(Series)
+		newSeries := make(Series)
+		for k, v := range aSeries {
+			if bv, ok := bSeries[k]; ok {
+				if bv != float64(0) {
+					newSeries[k] = v
+				}
+			}
+		}
+		if len(newSeries) > 0 {
+			res.Results = append(res.Results, &Result{Group: union.Group, Value: newSeries})
+		}
+	}
+	return &res, nil
+}
+
 func Epoch(e *State, T miniprofiler.Timer) (*Results, error) {
 	return &Results{
 		Results: []*Result{
@@ -361,6 +424,11 @@ func Epoch(e *State, T miniprofiler.Timer) (*Results, error) {
 }
 
 func NV(e *State, T miniprofiler.Timer, series *Results, v float64) (results *Results, err error) {
+	// If there are no results in the set, promote it to a number with the empty group ({})
+	if len(series.Results) == 0 {
+		series.Results = append(series.Results, &Result{Value: Number(v), Group: make(opentsdb.TagSet)})
+		return series, nil
+	}
 	series.NaNValue = &v
 	return series, nil
 }
@@ -403,15 +471,15 @@ func Filter(e *State, T miniprofiler.Timer, series *Results, number *Results) (*
 }
 
 func Merge(e *State, T miniprofiler.Timer, series ...*Results) (*Results, error) {
+	res := &Results{}
 	if len(series) == 0 {
-		return &Results{}, fmt.Errorf("merge requires at least one result")
+		return res, fmt.Errorf("merge requires at least one result")
 	}
 	if len(series) == 1 {
 		return series[0], nil
 	}
-	res := series[0]
 	seen := make(map[string]bool)
-	for _, r := range series[1:] {
+	for _, r := range series {
 		for _, entry := range r.Results {
 			if _, ok := seen[entry.Group.String()]; ok {
 				return res, fmt.Errorf("duplicate group in merge: %s", entry.Group.String())
@@ -447,6 +515,15 @@ func Duration(e *State, T miniprofiler.Timer, d string) (*Results, error) {
 	return &Results{
 		Results: []*Result{
 			{Value: Scalar(duration.Seconds())},
+		},
+	}, nil
+}
+
+func ToDuration(e *State, T miniprofiler.Timer, sec float64) (*Results, error) {
+	d := opentsdb.Duration(time.Duration(int64(sec)) * time.Second)
+	return &Results{
+		Results: []*Result{
+			{Value: String(d.HumanString())},
 		},
 	}, nil
 }
@@ -520,6 +597,10 @@ func parseGraphiteResponse(req *graphite.Request, s *graphite.Response, formatTa
 					tags[key] = nodes[i]
 				}
 			}
+		}
+		if !tags.Valid() {
+			msg := fmt.Sprintf("returned target '%s' would make an invalid tag '%s'", res.Target, tags.String())
+			return nil, fmt.Errorf(parseErrFmt, req.URL, msg)
 		}
 		if ts := tags.String(); !seen[ts] {
 			seen[ts] = true
