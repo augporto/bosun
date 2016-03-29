@@ -120,7 +120,7 @@ func main() {
 		check(collectors.AWS(a.AccessKey, a.SecretKey, a.Region, a.BillingProductCodesRegex, a.BillingBucketName, a.BillingBucketPath, a.BillingPurgeDays))
 	}
 	for _, v := range conf.Vsphere {
-		check(collectors.Vsphere(v.User, v.Password, v.Host))
+		check(collectors.Vsphere(v.User, v.Password, v.Host, v.PerformanceMetrics))
 	}
 	for _, p := range conf.Process {
 		check(collectors.AddProcessConfig(p))
