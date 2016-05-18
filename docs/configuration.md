@@ -64,6 +64,7 @@ Config items:
 * redisPassword: redis password.
 
 * ledisDir: directory for ledisDb to store it's data. Will default to `ledis_data` in working dir if no redis host is provided.
+* ledisBindAddr: Address and port for ledis to bind to, defaults to `127.0.0.1:9565`.
 
 #### settings
 
@@ -193,6 +194,7 @@ Global template functions:
 * replace: [strings.Replace](http://golang.org/pkg/strings/#Replace)
 * short: Trims the string to everything before the first period. Useful for turning a FQDN into a shortname. For example: `{{short "foo.baz.com"}}` -> `foo`.
 * parseDuration: [time.ParseDuration](http://golang.org/pkg/time/#ParseDuration). Useful when working with an alert's .Last.Time.Add method to generate urls to other systems.
+* html: takes a string and renders it as html. Useful for when you have alert variables that contain html. For example in the alert you may have `$notes = <a href="...">Foo</a>` and the in the template you can render it as html with `{{ html .Alert.Vars.notes }}` 
 
 All body templates are associated, and so may be executed from another. Use the name of the other template section for inclusion. Subject templates are similarly associated.
 

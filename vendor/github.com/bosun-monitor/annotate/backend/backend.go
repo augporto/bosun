@@ -4,16 +4,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
-	"github.com/kylebrandt/annotate"
+	"github.com/bosun-monitor/annotate"
 	elastic "gopkg.in/olivere/elastic.v3"
 )
 
 type Backend interface {
 	InsertAnnotation(a *annotate.Annotation) error
-	GetAnnotation(id string) (*annotate.Annotation, error)
-	GetAnnotations(start, end *time.Time, source, host, creationUser, owner, category string) (annotate.Annotations, error)
+	GetAnnotation(id string) (*annotate.Annotation, bool, error)
+	GetAnnotations(start, end *time.Time, filters ...FieldFilter) (annotate.Annotations, error)
 	DeleteAnnotation(id string) error
 	GetFieldValues(field string) ([]string, error)
 	InitBackend() error
@@ -37,19 +38,23 @@ func (e *Elastic) InsertAnnotation(a *annotate.Annotation) error {
 	return err
 }
 
-func (e *Elastic) GetAnnotation(id string) (*annotate.Annotation, error) {
+func (e *Elastic) GetAnnotation(id string) (*annotate.Annotation, bool, error) {
 	a := annotate.Annotation{}
 	if id == "" {
-		return &a, fmt.Errorf("must provide id")
+		return &a, false, fmt.Errorf("must provide id")
 	}
 	res, err := e.Get().Index(e.index).Type(docType).Id(id).Do()
+	// Ewwww...
+	if err != nil && strings.Contains(err.Error(), "Error 404") {
+		return &a, false, nil
+	}
 	if err != nil {
-		return &a, err
+		return &a, false, err
 	}
 	if err := json.Unmarshal(*res.Source, &a); err != nil {
-		return &a, err
+		return &a, res.Found, err
 	}
-	return &a, nil
+	return &a, res.Found, nil
 }
 
 func (e *Elastic) DeleteAnnotation(id string) error {
@@ -61,30 +66,49 @@ func (e *Elastic) DeleteAnnotation(id string) error {
 	//TODO? Check res.Found?
 }
 
-func (e *Elastic) GetAnnotations(start, end *time.Time, source, host, creationUser, owner, category string) (annotate.Annotations, error) {
+type FieldFilter struct {
+	Field string
+	Verb  string
+	Not   bool
+	Value string
+}
+
+const Is = "Is"
+const Empty = "Empty"
+
+func (e *Elastic) GetAnnotations(start, end *time.Time, fieldFilters ...FieldFilter) (annotate.Annotations, error) {
 	annotations := annotate.Annotations{}
-	s := elastic.NewSearchSource()
+	filters := []elastic.Query{}
 	if start != nil && end != nil {
 		startQ := elastic.NewRangeQuery(annotate.EndDate).Gte(start)
 		endQ := elastic.NewRangeQuery(annotate.StartDate).Lte(end)
-		s = s.Query(elastic.NewBoolQuery().Must(startQ, endQ))
+		filters = append(filters, elastic.NewBoolQuery().Must(startQ, endQ))
 	}
-	if source != "" {
-		s = s.Query(elastic.NewTermQuery(annotate.Source, source))
+	for _, filter := range fieldFilters {
+		switch filter.Field {
+		case annotate.Source, annotate.Host, annotate.CreationUser, annotate.Owner, annotate.Category:
+		default:
+			return annotations, fmt.Errorf("%v is not a field that can be filtered on", filter.Field)
+		}
+		var q elastic.Query
+		switch filter.Verb {
+		case Is, "":
+			q = elastic.NewTermQuery(filter.Field, filter.Value)
+		case Empty:
+			// Can't detect empty on a analyzed field
+			if filter.Field == annotate.Message {
+				return annotations, fmt.Errorf("message field does not support empty searches")
+			}
+			q = elastic.NewTermQuery(filter.Field, "")
+		default:
+			return annotations, fmt.Errorf("%v is not a valid query verb", filter.Verb)
+		}
+		if filter.Not {
+			q = elastic.NewBoolQuery().MustNot(q)
+		}
+		filters = append(filters, q)
 	}
-	if host != "" {
-		s = s.Query(elastic.NewTermQuery(annotate.Host, host))
-	}
-	if creationUser != "" {
-		s = s.Query(elastic.NewTermQuery(annotate.CreationUser, creationUser))
-	}
-	if owner != "" {
-		s = s.Query(elastic.NewTermQuery(annotate.Owner, owner))
-	}
-	if category != "" {
-		s = s.Query(elastic.NewTermQuery(annotate.Category, category))
-	}
-	res, err := e.Search(e.index).Query(s).Size(e.maxResults).Do()
+	res, err := e.Search(e.index).Query(elastic.NewBoolQuery().Must(filters...)).Size(e.maxResults).Do()
 	if err != nil {
 		return annotations, err
 	}
@@ -151,6 +175,7 @@ func (e *Elastic) InitBackend() error {
 	p[annotate.CreationUser] = stringNA
 	p[annotate.Owner] = stringNA
 	p[annotate.Category] = stringNA
+	p[annotate.Url] = stringNA
 	mapping := make(map[string]interface{})
 	mapping["properties"] = p
 	q := e.PutMapping().Index(e.index).Type(docType).BodyJson(mapping)

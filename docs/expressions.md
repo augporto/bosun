@@ -36,7 +36,7 @@ Groups are generally provided by your time series database. We also sometimes re
 Each group can become its own alert instance. This is what we mean by ***scope*** or dimensionality. Thus, you can do things like `avg(q("sum:sys.cpu{host=ny-*}", "5m", "")) > 0.8` to check the CPU usage for many New York hosts at once. The dimensions can be manipulated with our expression language.
 
 ### Group Subsets
-Various metrics can be combined by operators as long as one group is a subset of the other. A ***subset*** is when one of the groups contains all of the tag key-value pairs in the other. An empty group `{}` is a subset of all groups. `{host=foo}` is a subset of `{host=foo,interface=eth0}`, and neither `{host=foo,interface=eth0}` nor `{host=foo,parition=/}` are a subset of the other. Equal groups are considered subsets of each other.
+Various metrics can be combined by operators as long as one group is a subset of the other. A ***subset*** is when one of the groups contains all of the tag key-value pairs in the other. An empty group `{}` is a subset of all groups. `{host=foo}` is a subset of `{host=foo,interface=eth0}`, and neither `{host=foo,interface=eth0}` nor `{host=foo,partition=/}` are a subset of the other. Equal groups are considered subsets of each other.
 
 ## Operators
 
@@ -73,11 +73,11 @@ alert haproxy_session_limit {
     $notes = This alert monitors the percentage of sessions against the session limit in haproxy (maxconn) and alerts when we are getting close to that limit and will need to raise that limit. This alert was created due to a socket outage we experienced for that reason
     $current_sessions = max(q("sum:haproxy.frontend.scur{host=*,pxname=*,tier=*}", "5m", ""))
     $session_limit = max(q("sum:haproxy.frontend.slim{host=*,pxname=*,tier=*}", "5m", ""))
-    $q = ($current_sessions / $session_limit) * 100
-    warn = $q > 80
-    crit = $q > 95
+    $query = ($current_sessions / $session_limit) * 100
+    warn = $query > 80
+    crit = $query > 95
     warnNotification = default
-    critNotificaiton = default
+    critNotification = default
 }
 </pre>
 
@@ -88,7 +88,7 @@ We don't need to understand everything in this alert, but it is worth highlighti
  * `q("sum:haproxy.frontend.scur{host=*,pxname=*,tier=*}", "5m", "")` is an OpenTSDB query function, it returns *N* series, we know each series will have the host, pxname, and tier tag keys in their group based on the query.
  * `max(...)` is a reduction function. It takes each **series** and **reduces** it to a **number** (See the Data types section above).
  * `$current_sessions / $session_limit` these variables represent **numbers** and will have subset group matches so there for you can use the / **operator** between them.
- *  `warn = $q > 80` if this is true (non-zero) then the `warnNotification` will be triggered.
+ *  `warn = $query > 80` if this is true (non-zero) then the `warnNotification` will be triggered.
 
 # Query Functions
 
@@ -198,7 +198,7 @@ escount returns a time bucked count of matching documents. It uses the keystring
   * `bucketDuration` is an opentsdb duration string. It sets the the span of time to bucket the count of documents. For example, "1m" will give you the count of documents per minute.
   * `startDuration` and `endDuration` set the time window from now - see the OpenTSDB q() function for more details.
 
-### esstat(indexRoot ESIndexer, keyString string, filter ESQuery, bucketDuration string, startDuration string, endDuration string) seriesSet
+### esstat(indexRoot ESIndexer, keyString string, filter ESQuery, field string, rStat string, bucketDuration string, startDuration string, endDuration string) seriesSet
 
 estat returns various summary stats per bucket for the specified `field`. The field must be numeric in elastic. rStat can be one of `avg`, `min`, `max`, `sum`, `sum_of_squares`, `variance`, `std_deviation`. The rest of the fields behave the same as escount.
 
@@ -231,16 +231,16 @@ esand takes one or more ESQueries and combines them into an [elastic bool query]
 ### esor(queries.. ESQuery) ESQuery
 esor takes one or more ESQueries and combines them into an [elastic bool query](https://www.elastic.co/guide/en/elasticsearch/reference/2.x/query-dsl-bool-query.html) so that at least one must be true.
 
-###esgt(field string, value Scalar) ESQuery
+### esgt(field string, value Scalar) ESQuery
 esgt takes a field (expected to be numeric field in elastic) and returns results where the value of that field is greater than the specified value. It creates an [elastic range query](https://www.elastic.co/guide/en/elasticsearch/reference/2.x/query-dsl-range-query.html).
 
-###esgte(field string, value Scalar) ESQuery
+### esgte(field string, value Scalar) ESQuery
 esgt takes a field (expected to be numeric field in elastic) and returns results where the value of that field is greater than or equal to the specified value. It creates an [elastic range query](https://www.elastic.co/guide/en/elasticsearch/reference/2.x/query-dsl-range-query.html).
 
-###eslt(field string, value Scalar) ESQuery
+### eslt(field string, value Scalar) ESQuery
 esgt takes a field (expected to be numeric field in elastic) and returns results where the value of that field is less than the specified value. It creates an [elastic range query](https://www.elastic.co/guide/en/elasticsearch/reference/2.x/query-dsl-range-query.html).
 
-###eslte(field string, value Scalar) ESQuery
+### eslte(field string, value Scalar) ESQuery
 esgt takes a field (expected to be numeric field in elastic) and returns results where the value of that field is less than or equal to the specified value. It creates an [elastic range query](https://www.elastic.co/guide/en/elasticsearch/reference/2.x/query-dsl-range-query.html).
 
 
@@ -427,7 +427,7 @@ Alert if more than 50% of servers in a group have ping timeouts
     $number_down_series = sum($max_timeout_series)
     $total_servers = len($max_timeout_series)
     $percent_down = $number_down_servers / $total_servers) * 100
-    warnNotificaiton = $percent_down > 25
+    warnNotification = $percent_down > 25
   }
 ~~~
 
@@ -513,6 +513,27 @@ Returns the first count (scalar) results of number.
 ## lookup(table string, key string) numberSet
 
 Returns the first key from the given lookup table with matching tags.
+
+## month(offset scalar, startEnd string) scalar
+
+Returns the epoch of either the start or end of the month. Offset is the timezone offset from UTC that the month starts/ends at (but the returned epoch is representitive of UTC). startEnd must be either `"start"` or `"end"`. Useful for things like monthly billing, for example:
+
+```
+$hostInt = host=ny-nexus01,iname=Ethernet1/46
+$inMetric = "sum:5m-avg:rate{counter,,1}:__ny-nexus01.os.net.bytes{$hostInt,direction=in}"
+$outMetric = "sum:5m-avg:rate{counter,,1}:__ny-nexus01.os.net.bytes{$hostInt,direction=in}"
+$commit = 100
+$monthStart = month(-4, "start")
+$monthEnd = month(-4, "end")
+$monthLength = $monthEnd - $monthStart
+$burstTime = ($monthLength)*.05
+$burstableObservations = $burstTime / d("5m")
+$in = q($inMetric, tod(epoch()-$monthStart), "") * 8 / 1e6
+$out = q($inMetric, tod(epoch()-$monthStart), "") * 8 / 1e6
+$inOverCount = sum($in > $commit)
+$outOverCount = sum($out > $commit)
+$inOverCount > $burstableObservations || $outOverCount > $burstableObservations
+```
 
 ## series(tagset string, epoch, value, ...) seriesSet
 

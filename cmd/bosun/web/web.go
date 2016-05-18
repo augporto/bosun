@@ -29,9 +29,9 @@ import (
 	"bosun.org/util"
 
 	"github.com/MiniProfiler/go/miniprofiler"
+	"github.com/bosun-monitor/annotate/backend"
+	"github.com/bosun-monitor/annotate/web"
 	"github.com/gorilla/mux"
-	"github.com/kylebrandt/annotate/backend"
-	"github.com/kylebrandt/annotate/web"
 )
 
 var (
@@ -97,7 +97,7 @@ func Listen(listenAddr string, devMode bool, tsdbHost string) error {
 	router.Handle("/api/alerts", JSON(Alerts))
 	router.Handle("/api/config", miniprofiler.NewHandler(Config))
 	router.Handle("/api/config_test", miniprofiler.NewHandler(ConfigTest))
-	router.Handle("/api/egraph/{bs}.svg", JSON(ExprGraph))
+	router.Handle("/api/egraph/{bs}.{format:svg|png}", JSON(ExprGraph))
 	router.Handle("/api/errors", JSON(ErrorHistory))
 	router.Handle("/api/expr", JSON(Expr))
 	router.Handle("/api/graph", JSON(Graph))
@@ -561,6 +561,7 @@ func Action(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (inter
 		User    string
 		Message string
 		Keys    []string
+		Ids     []int64
 		Notify  bool
 	}
 	j := json.NewDecoder(r.Body)
@@ -588,9 +589,17 @@ func Action(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (inter
 		if err != nil {
 			return nil, err
 		}
-		err = schedule.Action(data.User, data.Message, at, ak)
+		err = schedule.ActionByAlertKey(data.User, data.Message, at, ak)
 		if err != nil {
 			errs[key] = err
+		} else {
+			successful = append(successful, ak)
+		}
+	}
+	for _, id := range data.Ids {
+		ak, err := schedule.ActionByIncidentId(data.User, data.Message, at, id)
+		if err != nil {
+			errs[fmt.Sprintf("%v", id)] = err
 		} else {
 			successful = append(successful, ak)
 		}

@@ -17,9 +17,9 @@ import (
 	"bosun.org/opentsdb"
 	"github.com/MiniProfiler/go/miniprofiler"
 	svg "github.com/ajstarks/svgo"
+	"github.com/bosun-monitor/annotate"
 	"github.com/bradfitz/slice"
 	"github.com/gorilla/mux"
-	"github.com/kylebrandt/annotate"
 	"github.com/vdobler/chart"
 	"github.com/vdobler/chart/svgg"
 )
@@ -183,7 +183,7 @@ func Graph(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (interf
 	}
 	var a []annotate.Annotation
 	if schedule.Conf.AnnotateEnabled() {
-		a, err = annotateBackend.GetAnnotations(&startT, &endT, "", "", "", "", "")
+		a, err = annotateBackend.GetAnnotations(&startT, &endT)
 		if err != nil {
 			return nil, err
 		}
@@ -204,6 +204,7 @@ func Graph(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (interf
 func ExprGraph(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (interface{}, error) {
 	vars := mux.Vars(r)
 	bs := vars["bs"]
+	format := vars["format"]
 	b, err := base64.StdEncoding.DecodeString(bs)
 	if err != nil {
 		return nil, err
@@ -244,8 +245,15 @@ func ExprGraph(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (in
 	if err != nil {
 		return nil, err
 	}
-	if err := schedule.ExprSVG(t, w, 800, 600, "", res.Results); err != nil {
-		return nil, err
+	switch format {
+	case "svg":
+		if err := schedule.ExprSVG(t, w, 800, 600, "", res.Results); err != nil {
+			return nil, err
+		}
+	case "png":
+		if err := schedule.ExprPNG(t, w, 800, 600, "", res.Results); err != nil {
+			return nil, err
+		}
 	}
 	return nil, nil
 }

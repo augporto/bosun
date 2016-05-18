@@ -87,7 +87,7 @@ func (s *Schedule) Init(c *conf.Conf) error {
 		}
 	}
 	if s.Search == nil {
-		s.Search = search.NewSearch(s.DataAccess)
+		s.Search = search.NewSearch(s.DataAccess, c.SkipLast)
 	}
 	if c.StateFile != "" {
 		s.db, err = bolt.Open(c.StateFile, 0600, nil)
@@ -386,7 +386,7 @@ func (s *Schedule) MarshalGroups(T miniprofiler.Timer, filter string) (*StateGro
 			a := s.Conf.Alerts[k.Name()]
 			if a == nil {
 				slog.Errorf("unknown alert %s. Force closing.", k.Name())
-				if err2 = s.Action("bosun", "closing because alert doesn't exist.", models.ActionForceClose, k); err2 != nil {
+				if err2 = s.ActionByAlertKey("bosun", "closing because alert doesn't exist.", models.ActionForceClose, k); err2 != nil {
 					slog.Error(err2)
 				}
 				continue
@@ -511,6 +511,9 @@ func Close() {
 }
 
 func (s *Schedule) Close() {
+	if s.Conf.SkipLast {
+		return
+	}
 	err := s.Search.BackupLast()
 	if err != nil {
 		slog.Error(err)
@@ -574,10 +577,7 @@ func init() {
 		"The running count of actions performed by individual users (Closed alert, Acknowledged alert, etc).")
 }
 
-func (s *Schedule) Action(user, message string, t models.ActionType, ak models.AlertKey) error {
-	if err := collect.Add("actions", opentsdb.TagSet{"user": user, "alert": ak.Name(), "type": t.String()}, 1); err != nil {
-		slog.Errorln(err)
-	}
+func (s *Schedule) ActionByAlertKey(user, message string, t models.ActionType, ak models.AlertKey) error {
 	st, err := s.DataAccess.State().GetLatestIncident(ak)
 	if err != nil {
 		return err
@@ -585,23 +585,49 @@ func (s *Schedule) Action(user, message string, t models.ActionType, ak models.A
 	if st == nil {
 		return fmt.Errorf("no such alert key: %v", ak)
 	}
+	_, err = s.action(user, message, t, st)
+	return err
+}
+
+func (s *Schedule) ActionByIncidentId(user, message string, t models.ActionType, id int64) (models.AlertKey, error) {
+	st, err := s.DataAccess.State().GetIncidentState(id)
+	if err != nil {
+		return "", err
+	}
+	if st == nil {
+		return "", fmt.Errorf("no incident with id: %v", id)
+	}
+	return s.action(user, message, t, st)
+}
+
+func (s *Schedule) action(user, message string, t models.ActionType, st *models.IncidentState) (ak models.AlertKey, e error) {
+	if err := collect.Add("actions", opentsdb.TagSet{"user": user, "alert": st.AlertKey.Name(), "type": t.String()}, 1); err != nil {
+		slog.Errorln(err)
+	}
+	defer func() {
+		if e == nil {
+			if err := collect.Add("actions", opentsdb.TagSet{"user": user, "alert": st.AlertKey.Name(), "type": t.String()}, 1); err != nil {
+				slog.Errorln(err)
+			}
+			if err := s.DataAccess.Notifications().ClearNotifications(st.AlertKey); err != nil {
+				e = err
+			}
+		}
+	}()
 	isUnknown := st.LastAbnormalStatus == models.StUnknown
 	timestamp := utcNow()
 	switch t {
 	case models.ActionAcknowledge:
 		if !st.NeedAck {
-			return fmt.Errorf("alert already acknowledged")
+			return "", fmt.Errorf("alert already acknowledged")
 		}
 		if !st.Open {
-			return fmt.Errorf("cannot acknowledge closed alert")
+			return "", fmt.Errorf("cannot acknowledge closed alert")
 		}
 		st.NeedAck = false
-		if err := s.DataAccess.Notifications().ClearNotifications(ak); err != nil {
-			return err
-		}
 	case models.ActionClose:
 		if st.IsActive() {
-			return fmt.Errorf("cannot close active alert")
+			return "", fmt.Errorf("cannot close active alert")
 		}
 		fallthrough
 	case models.ActionForceClose:
@@ -609,18 +635,13 @@ func (s *Schedule) Action(user, message string, t models.ActionType, ak models.A
 		st.End = &timestamp
 	case models.ActionForget:
 		if !isUnknown {
-			return fmt.Errorf("can only forget unknowns")
+			return "", fmt.Errorf("can only forget unknowns")
 		}
 		fallthrough
 	case models.ActionPurge:
-		return s.DataAccess.State().Forget(ak)
+		return st.AlertKey, s.DataAccess.State().Forget(st.AlertKey)
 	default:
-		return fmt.Errorf("unknown action type: %v", t)
-	}
-	// Would like to also track the alert group, but I believe this is impossible because any character
-	// that could be used as a delimiter could also be a valid tag key or tag value character
-	if err := collect.Add("actions", opentsdb.TagSet{"user": user, "alert": ak.Name(), "type": t.String()}, 1); err != nil {
-		slog.Errorln(err)
+		return "", fmt.Errorf("unknown action type: %v", t)
 	}
 	st.Actions = append(st.Actions, models.Action{
 		Message: message,
@@ -628,8 +649,8 @@ func (s *Schedule) Action(user, message string, t models.ActionType, ak models.A
 		Type:    t,
 		User:    user,
 	})
-	_, err = s.DataAccess.State().UpdateIncidentState(st)
-	return err
+	_, err := s.DataAccess.State().UpdateIncidentState(st)
+	return st.AlertKey, err
 }
 
 type IncidentStatus struct {

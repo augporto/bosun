@@ -63,6 +63,7 @@ type Conf struct {
 	Lookups          map[string]*Lookup
 	Squelch          Squelches `json:"-"`
 	Quiet            bool
+	SkipLast         bool
 	NoSleep          bool
 	ShortURLKey      string
 	InternetProxy    string
@@ -787,6 +788,9 @@ var defaultFuncs = ttemplate.FuncMap{
 	"short": func(v string) string {
 		return strings.SplitN(v, ".", 2)[0]
 	},
+	"html": func(value interface{}) htemplate.HTML {
+		return htemplate.HTML(fmt.Sprint(value))
+	},
 	"parseDuration": time.ParseDuration,
 }
 
@@ -1139,7 +1143,7 @@ var exRE = regexp.MustCompile(`\$(?:[\w.]+|\{[\w.]+\})`)
 func (c *Conf) Expand(v string, vars map[string]string, ignoreBadExpand bool) string {
 	ss := exRE.ReplaceAllStringFunc(v, func(s string) string {
 		var n string
-		if strings.HasPrefix(s, "${") && strings.HasSuffix(s, "}") {
+		if strings.HasPrefix(s, "${") && strings.HasSuffix(s, "}") && !ignoreBadExpand {
 			s = "$" + s[2:len(s)-1]
 		}
 		if _n, ok := vars[s]; ok {

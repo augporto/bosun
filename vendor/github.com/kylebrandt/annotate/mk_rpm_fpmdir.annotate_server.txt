@@ -1,2 +1,0 @@
-#Perm Destination                       Source
-exec /usr/stackyumtools/bin/annotate_server   cmd/server/server
