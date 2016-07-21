@@ -1,2 +1,6 @@
 cmd/bosun/dev.conf
 docs/.jekyll-metadata
+.idea/
+
+cmd/scollector/scollector
+cmd/scollector/scollector.toml
