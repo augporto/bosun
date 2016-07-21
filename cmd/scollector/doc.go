@@ -199,13 +199,36 @@ Vsphere (array of table, keys are Host, User, Password): vSphere hosts to poll.
 	  User = "vuser"
 	  Password = "pass"
 
-AWS (array of table, keys are AccessKey, SecretKey, Region): AWS hosts to poll.
+AWS (array of table, keys are AccessKey, SecretKey, Region, BillingProductCodesRegex,
+BillingBucketName, BillingBucketPath, BillingPurgeDays): AWS hosts to poll, and associated
+billing information.
+
+To report AWS billing information to OpenTSDB or Bosun, you need to configure AWS to
+generate billing reports, which will be put into an S3 bucket. See for more detail:
+http://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/detailed-billing-reports.html
+
+Once the reports are going into the S3, bucket, the Bucket Name and the Prefix Path that
+you entered during the report setup need to be entered below. Do not enter a blank bucket
+path as this is not supported.
+
+Reports that are over a certain number of days old are purged by scollector. Set the key
+BillingPurgeDays to 0 to disable purging of old reports (not that this may increase your S3
+usage costs as all reports are processed each time the collector runs).
+
+Do not populate the Billing keys if you do not wish to load billing data into OpenTSDB or
+Bosun.
+
+Only products whose name matches the BillingProductCodesRegex key will have their billing
+data sent to OpenTSDB or Bosun.
 
 	[[AWS]]
 	  AccessKey = "aoesnuth"
 	  SecretKey = "snch0d"
 	  Region = "somewhere"
-
+	  BillingProductCodesRegex = "^Amazon(S3|Glacier|Route53)$"
+	  BillingBucketName = "mybucket.billing"
+	  BillingBucketPath = "reports"
+	  BillingPurgeDays = 2
 
 Process: processes to monitor.
 
@@ -241,10 +264,11 @@ management plugin on http://guest:guest@127.0.0.1:15672/ .
 Cadvisor: Cadvisor endpoints to poll.
 Cadvisor collects system statistics about running containers.
 See https://github.com/google/cadvisor/ for documentation about configuring
-cadvisor.
+cadvisor. You can enable per cpu usage metric reporting optionally.
 
 	[[Cadvisor]]
 		URL = "http://localhost:8080"
+		PerCpuUsage = true
 
 RedisCounters: Reads a hash of metric/counters from a redis database.
 
@@ -291,12 +315,23 @@ CAUTION: Do not include unbounded values in your key if you can help it. Putting
 source/destination port, which are out of your control and specified by people external to your network, could
 end up putting millions of different keys into your Bosun instance - something you probably don't want.
 
+CertificateSubjectMatch and CertificateActivityGroup are used for collecting SSL information from ExtraHop. The
+key CertificateSubjectMatch is used to match against the certificate subject. If there is no match, we discard
+the certificate record. This is important as certificate subjects are essentially unbound, as EH return all
+certificates it sees, regardless of where they originated.
+
+The key CertificateActivityGroup is the Activity Group you want to pass through to ExtraHop to pull the certificates
+from. There is a group called "SSL Servers" which is most likely the group you want to use. You will need to discover
+the group number for this group and put it in here.
+
 	[[ExtraHop]]
 	  Host = "extrahop01"
 	  APIkey = "abcdef1234567890"
 	  FilterBy = "toppercent"
 	  FilterPercent = 75
-      AdditionalMetrics = [ "application.12.custom_detail.my trigger metric" ]
+    AdditionalMetrics = [ "application.12.custom_detail.my trigger metric" ]
+		CertificateSubjectMatch = "example.(com|org|net)"
+		CertificateActivityGroup = 46
 
 LocalListener (string): local_listener will listen for HTTP request and forward
 the request to the configured OpenTSDB host while adding defined tags to

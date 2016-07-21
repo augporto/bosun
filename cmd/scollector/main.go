@@ -41,6 +41,7 @@ var (
 	flagVersion         = flag.Bool("version", false, "Prints the version and exits.")
 	flagConf            = flag.String("conf", "", "Location of configuration file. Defaults to scollector.toml in directory of the scollector executable.")
 	flagToToml          = flag.String("totoml", "", "Location of destination toml file to convert. Reads from value of -conf.")
+	flagNtlm            = flag.Bool("useNtlm", false, "Specifies to use NTLM authentication.")
 
 	mains []func()
 )
@@ -65,6 +66,9 @@ func main() {
 	conf := readConf()
 	if *flagHost != "" {
 		conf.Host = *flagHost
+	}
+	if *flagNtlm {
+		conf.UseNtlm = *flagNtlm
 	}
 	if *flagFilter != "" {
 		conf.Filter = strings.Split(*flagFilter, ",")
@@ -113,7 +117,7 @@ func main() {
 		check(collectors.ICMP(i.Host))
 	}
 	for _, a := range conf.AWS {
-		check(collectors.AWS(a.AccessKey, a.SecretKey, a.Region))
+		check(collectors.AWS(a.AccessKey, a.SecretKey, a.Region, a.BillingProductCodesRegex, a.BillingBucketName, a.BillingBucketPath, a.BillingPurgeDays))
 	}
 	for _, v := range conf.Vsphere {
 		check(collectors.Vsphere(v.User, v.Password, v.Host))
@@ -150,7 +154,7 @@ func main() {
 	}
 
 	for _, x := range conf.ExtraHop {
-		check(collectors.ExtraHop(x.Host, x.APIKey, x.FilterBy, x.FilterPercent, x.AdditionalMetrics))
+		check(collectors.ExtraHop(x.Host, x.APIKey, x.FilterBy, x.FilterPercent, x.AdditionalMetrics, x.CertificateSubjectMatch, x.CertificateActivityGroup))
 	}
 
 	if err != nil {
@@ -212,6 +216,7 @@ func main() {
 	if u != nil {
 		slog.Infoln("OpenTSDB host:", u)
 	}
+	collect.UseNtlm = conf.UseNtlm
 	if err := collect.InitChan(u, "scollector", cdp); err != nil {
 		slog.Fatal(err)
 	}

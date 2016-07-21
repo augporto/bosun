@@ -125,6 +125,13 @@ bosunControllers.controller('BosunCtrl', ['$scope', '$route', '$http', '$q', '$r
             .error(function (data) {
             console.log(data);
         });
+        $http.get("/api/quiet")
+            .success(function (data) {
+            $scope.quiet = data;
+        })
+            .error(function (data) {
+            console.log(data);
+        });
         $http.get("/api/opentsdb/version")
             .success(function (data) {
             $scope.version = data;
@@ -315,6 +322,29 @@ moment.locale('en', {
         yy: "%dy"
     }
 });
+function ruleUrl(ak, fromTime) {
+    var openBrack = ak.indexOf("{");
+    var closeBrack = ak.indexOf("}");
+    var alertName = ak.substr(0, openBrack);
+    var template = ak.substring(openBrack + 1, closeBrack);
+    var url = '/api/rule?' +
+        'alert=' + encodeURIComponent(alertName) +
+        '&from=' + encodeURIComponent(fromTime.format()) +
+        '&template_group=' + encodeURIComponent(template);
+    return url;
+}
+function configUrl(ak, fromTime) {
+    var openBrack = ak.indexOf("{");
+    var closeBrack = ak.indexOf("}");
+    var alertName = ak.substr(0, openBrack);
+    var template = ak.substring(openBrack + 1, closeBrack);
+    // http://bosun/config?alert=haproxy.server.downtime.ny&fromDate=2016-07-10&fromTime=21%3A03
+    var url = '/config?' +
+        'alert=' + encodeURIComponent(alertName) +
+        '&fromDate=' + encodeURIComponent(fromTime.format("YYYY-MM-DD")) +
+        '&fromTime=' + encodeURIComponent(fromTime.format("HH:mm"));
+    return url;
+}
 function createCookie(name, value, days) {
     var expires;
     if (days) {
@@ -932,6 +962,35 @@ bosunApp.directive("tsTime", function () {
             scope.$watch(attrs.tsTime, function (v) {
                 var m = moment(v).utc();
                 var text = fmtTime(v);
+                if (attrs.tsEndTime) {
+                    var diff = moment(scope.$eval(attrs.tsEndTime)).diff(m);
+                    var duration = fmtDuration(diff);
+                    text += " for " + duration;
+                }
+                if (attrs.noLink) {
+                    elem.text(text);
+                }
+                else {
+                    var el = document.createElement('a');
+                    el.text = text;
+                    el.href = 'http://www.timeanddate.com/worldclock/converted.html?iso=';
+                    el.href += m.format('YYYYMMDDTHHmm');
+                    el.href += '&p1=0';
+                    angular.forEach(scope.timeanddate, function (v, k) {
+                        el.href += '&p' + (k + 2) + '=' + v;
+                    });
+                    elem.html(el);
+                }
+            });
+        }
+    };
+});
+bosunApp.directive("tsTimeUnix", function () {
+    return {
+        link: function (scope, elem, attrs) {
+            scope.$watch(attrs.tsTimeUnix, function (v) {
+                var m = moment(v * 1000).utc();
+                var text = fmtTime(m);
                 if (attrs.tsEndTime) {
                     var diff = moment(scope.$eval(attrs.tsEndTime)).diff(m);
                     var duration = fmtDuration(diff);
@@ -2761,18 +2820,71 @@ bosunControllers.controller('HostCtrl', ['$scope', '$http', '$location', '$route
             $scope.fsdata = tmp;
         });
     }]);
-bosunControllers.controller('IncidentCtrl', ['$scope', '$http', '$location', '$route', function ($scope, $http, $location, $route) {
+bosunControllers.controller('IncidentCtrl', ['$scope', '$http', '$location', '$route', '$sce', function ($scope, $http, $location, $route, $sce) {
         var search = $location.search();
         var id = search.id;
         if (!id) {
             $scope.error = "must supply incident id as query parameter";
             return;
         }
+        $http.get('/api/config')
+            .success(function (data) {
+            $scope.config_text = data;
+        });
+        $scope.action = function (type) {
+            var key = encodeURIComponent($scope.state.AlertKey);
+            return '/action?type=' + type + '&key=' + key;
+        };
+        $scope.loadTimelinePanel = function (v, i) {
+            if (v.doneLoading && !v.error) {
+                return;
+            }
+            v.error = null;
+            v.doneLoading = false;
+            if (i == $scope.lastNonUnknownAbnormalIdx) {
+                v.subject = $scope.incident.Subject;
+                v.body = $scope.body;
+                v.doneLoading = true;
+                return;
+            }
+            var ak = $scope.incident.AlertKey;
+            var url = ruleUrl(ak, moment(v.Time));
+            $http.post(url, $scope.config_text)
+                .success(function (data) {
+                v.subject = data.Subject;
+                v.body = $sce.trustAsHtml(data.Body);
+            })
+                .error(function (error) {
+                v.error = error;
+            })
+                .finally(function () {
+                v.doneLoading = true;
+            });
+        };
+        $scope.shown = {};
+        $scope.collapse = function (i, v) {
+            $scope.shown[i] = !$scope.shown[i];
+            if ($scope.loadTimelinePanel && $scope.shown[i]) {
+                $scope.loadTimelinePanel(v, i);
+            }
+        };
         $http.get('/api/incidents/events?id=' + id)
             .success(function (data) {
             $scope.incident = data;
+            $scope.state = $scope.incident;
             $scope.actions = data.Actions;
-            $scope.events = data.Events;
+            $scope.body = $sce.trustAsHtml(data.Body);
+            $scope.events = data.Events.reverse();
+            $scope.configLink = configUrl($scope.incident.AlertKey, moment.unix($scope.incident.LastAbnormalTime * 1000));
+            for (var i = 0; i < $scope.events.length; i++) {
+                var e = $scope.events[i];
+                if (e.Status != 'normal' && e.Status != 'unknown') {
+                    $scope.lastNonUnknownAbnormalIdx = i;
+                    $scope.collapse(i, e); // Expand the panel of the current body
+                    break;
+                }
+            }
+            $scope.collapse;
         })
             .error(function (err) {
             $scope.error = err;
@@ -3163,7 +3275,7 @@ bosunApp.directive('tsState', ['$sce', '$http', function ($sce, $http) {
                 });
                 scope.state.last = scope.state.Events[scope.state.Events.length - 1];
                 if (scope.state.Actions && scope.state.Actions.length > 0) {
-                    scope.state.LastAction = scope.state.Actions[0];
+                    scope.state.LastAction = scope.state.Actions[scope.state.Actions.length - 1];
                 }
                 scope.state.RuleUrl = '/config?' +
                     'alert=' + encodeURIComponent(scope.state.Alert) +
@@ -3180,6 +3292,12 @@ bosunApp.directive('tsState', ['$sce', '$http', function ($sce, $http) {
             }
         };
     }]);
+bosunApp.directive('tsNote', function () {
+    return {
+        restrict: 'E',
+        templateUrl: '/partials/note.html'
+    };
+});
 bosunApp.directive('tsAck', function () {
     return {
         restrict: 'E',
