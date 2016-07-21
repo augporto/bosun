@@ -46,6 +46,9 @@ type Conf struct {
 	//Override default network interface expression
 	IfaceExpr string
 
+	// UseNtlm specifies if HTTP requests should authenticate with NTLM.
+	UseNtlm bool
+
 	HAProxy        []HAProxy
 	SNMP           []SNMP
 	MIBS           map[string]MIB
@@ -124,9 +127,13 @@ type Vsphere struct {
 }
 
 type AWS struct {
-	AccessKey string
-	SecretKey string
-	Region    string
+	AccessKey                string
+	SecretKey                string
+	Region                   string
+	BillingProductCodesRegex string
+	BillingBucketName        string
+	BillingBucketPath        string
+	BillingPurgeDays         int
 }
 
 type SNMP struct {
@@ -187,7 +194,8 @@ type Github struct {
 }
 
 type Cadvisor struct {
-	URL string
+	URL         string
+	PerCpuUsage bool
 }
 
 type RedisCounters struct {
@@ -196,11 +204,13 @@ type RedisCounters struct {
 }
 
 type ExtraHop struct {
-	Host              string
-	APIKey            string
-	FilterBy          string
-	FilterPercent     int
-	AdditionalMetrics []string
+	Host                     string
+	APIKey                   string
+	FilterBy                 string
+	FilterPercent            int
+	AdditionalMetrics        []string
+	CertificateSubjectMatch  string
+	CertificateActivityGroup int
 }
 
 type TagOverride struct {

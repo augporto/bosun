@@ -174,6 +174,13 @@ var builtins = map[string]parse.Func{
 	},
 
 	// Group functions
+	"addtags": {
+		Args:   []models.FuncType{models.TypeSeriesSet, models.TypeString},
+		Return: models.TypeSeriesSet,
+		Tags:   tagRename,
+		F:      AddTags,
+	},
+
 	"rename": {
 		Args:   []models.FuncType{models.TypeSeriesSet, models.TypeString},
 		Return: models.TypeSeriesSet,
@@ -200,6 +207,12 @@ var builtins = map[string]parse.Func{
 		Return: models.TypeNumberSet,
 		Tags:   tagFirst,
 		F:      Abs,
+	},
+	"crop": {
+		Args:   []models.FuncType{models.TypeSeriesSet, models.TypeNumberSet, models.TypeNumberSet},
+		Return: models.TypeSeriesSet,
+		Tags:   tagFirst,
+		F:      Crop,
 	},
 	"d": {
 		Args:   []models.FuncType{models.TypeString},
@@ -309,16 +322,76 @@ var builtins = map[string]parse.Func{
 		Return: models.TypeScalar,
 		F:      Month,
 	},
+	"timedelta": {
+		Args:   []models.FuncType{models.TypeSeriesSet},
+		Return: models.TypeSeriesSet,
+		Tags:   tagFirst,
+		F:      TimeDelta,
+	},
+	"tail": {
+		Args:   []models.FuncType{models.TypeSeriesSet, models.TypeNumberSet},
+		Return: models.TypeSeriesSet,
+		Tags:   tagFirst,
+		F:      Tail,
+	},
+	"map": {
+		Args:   []models.FuncType{models.TypeSeriesSet, models.TypeNumberExpr},
+		Return: models.TypeSeriesSet,
+		Tags:   tagFirst,
+		F:      Map,
+	},
+	"v": {
+		Return:  models.TypeScalar,
+		F:       V,
+		MapFunc: true,
+	},
+}
+
+func V(e *State, T miniprofiler.Timer) (*Results, error) {
+	return fromScalar(e.vValue), nil
+}
+
+func Map(e *State, T miniprofiler.Timer, series *Results, expr *Results) (*Results, error) {
+	newExpr := Expr{expr.Results[0].Value.Value().(NumberExpr).Tree}
+	for _, result := range series.Results {
+		newSeries := make(Series)
+		for t, v := range result.Value.Value().(Series) {
+			e.vValue = v
+			subResults, _, err := newExpr.ExecuteState(e, T)
+			if err != nil {
+				return series, err
+			}
+			for _, res := range subResults.Results {
+				var v float64
+				switch res.Value.Value().(type) {
+				case Number:
+					v = float64(res.Value.Value().(Number))
+				case Scalar:
+					v = float64(res.Value.Value().(Scalar))
+				default:
+					return series, fmt.Errorf("wrong return type for map expr: %v", res.Type())
+				}
+				newSeries[t] = v
+			}
+		}
+		result.Value = newSeries
+	}
+	return series, nil
 }
 
 func SeriesFunc(e *State, T miniprofiler.Timer, tags string, pairs ...float64) (*Results, error) {
 	if len(pairs)%2 != 0 {
 		return nil, fmt.Errorf("uneven number of time stamps and values")
 	}
-	group, err := opentsdb.ParseTags(tags)
-	if err != nil {
-		return nil, fmt.Errorf("unable to parse tags: %v", err)
+	group := opentsdb.TagSet{}
+	if tags != "" {
+		var err error
+		group, err = opentsdb.ParseTags(tags)
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse tags: %v", err)
+		}
 	}
+
 	series := make(Series)
 	for i := 0; i < len(pairs); i += 2 {
 		series[time.Unix(int64(pairs[i]), 0)] = pairs[i+1]
@@ -331,6 +404,41 @@ func SeriesFunc(e *State, T miniprofiler.Timer, tags string, pairs ...float64) (
 			},
 		},
 	}, nil
+}
+
+func Crop(e *State, T miniprofiler.Timer, sSet *Results, startSet *Results, endSet *Results) (*Results, error) {
+	results := Results{}
+INNER:
+	for _, seriesResult := range sSet.Results {
+		for _, startResult := range startSet.Results {
+			for _, endResult := range endSet.Results {
+				startHasNoGroup := len(startResult.Group) == 0
+				endHasNoGroup := len(endResult.Group) == 0
+				startOverlapsSeries := seriesResult.Group.Overlaps(startResult.Group)
+				endOverlapsSeries := seriesResult.Group.Overlaps(endResult.Group)
+				if (startHasNoGroup || startOverlapsSeries) && (endHasNoGroup || endOverlapsSeries) {
+					res := crop(e, seriesResult, startResult, endResult)
+					results.Results = append(results.Results, res)
+					continue INNER
+				}
+			}
+		}
+	}
+	return &results, nil
+}
+
+func crop(e *State, seriesResult *Result, startResult *Result, endResult *Result) *Result {
+	startNumber := startResult.Value.(Number)
+	endNumber := endResult.Value.(Number)
+	start := e.now.Add(-time.Duration(time.Duration(startNumber) * time.Second))
+	end := e.now.Add(-time.Duration(time.Duration(endNumber) * time.Second))
+	series := seriesResult.Value.(Series)
+	for timeStamp := range series {
+		if timeStamp.Before(start) || timeStamp.After(end) {
+			delete(series, timeStamp)
+		}
+	}
+	return seriesResult
 }
 
 func DropBool(e *State, T miniprofiler.Timer, target *Results, filter *Results) (*Results, error) {
@@ -427,6 +535,43 @@ func Filter(e *State, T miniprofiler.Timer, series *Results, number *Results) (*
 	}
 	series.Results = ns
 	return series, nil
+}
+
+func Tail(e *State, T miniprofiler.Timer, series *Results, number *Results) (*Results, error) {
+	f := func(res *Results, s *Result, floats []float64) error {
+		tailLength := int(floats[0])
+
+		// if there are fewer points than the requested tail
+		// short circut and just return current series
+		if len(s.Value.Value().(Series)) <= tailLength {
+			res.Results = append(res.Results, s)
+			return nil
+		}
+
+		// create new sorted series
+		// not going to do quick select
+		// see https://github.com/bosun-monitor/bosun/pull/1802
+		// for details
+		oldSr := s.Value.Value().(Series)
+		sorted := NewSortedSeries(oldSr)
+
+		// create new series keep a reference
+		// and point sr.Value interface at reference
+		// as we don't need old series any more
+		newSeries := make(Series)
+		s.Value = newSeries
+
+		// load up new series with desired
+		// number of points
+		// we already checked len so this is safe
+		for _, item := range sorted[len(sorted)-tailLength:] {
+			newSeries[item.T] = item.V
+		}
+		res.Results = append(res.Results, s)
+		return nil
+	}
+
+	return match(f, series, number)
 }
 
 func Merge(e *State, T miniprofiler.Timer, series ...*Results) (*Results, error) {
@@ -628,6 +773,27 @@ func cCount(dps Series, args ...float64) (a float64) {
 		last = p.V
 	}
 	return float64(count)
+}
+
+func TimeDelta(e *State, T miniprofiler.Timer, series *Results) (*Results, error) {
+	for _, res := range series.Results {
+		sorted := NewSortedSeries(res.Value.Value().(Series))
+		newSeries := make(Series)
+		if len(sorted) < 2 {
+			newSeries[sorted[0].T] = 0
+			res.Value = newSeries
+			continue
+		}
+		lastTime := sorted[0].T.Unix()
+		for _, dp := range sorted[1:] {
+			unixTime := dp.T.Unix()
+			diff := unixTime - lastTime
+			newSeries[dp.T] = float64(diff)
+			lastTime = unixTime
+		}
+		res.Value = newSeries
+	}
+	return series, nil
 }
 
 func Count(e *State, T miniprofiler.Timer, query, sduration, eduration string) (r *Results, err error) {
@@ -904,12 +1070,36 @@ func Rename(e *State, T miniprofiler.Timer, series *Results, s string) (*Results
 	return series, nil
 }
 
+func AddTags(e *State, T miniprofiler.Timer, series *Results, s string) (*Results, error) {
+	if s == "" {
+		return series, nil
+	}
+	tagSetToAdd, err := opentsdb.ParseTags(s)
+	if err != nil {
+		return nil, err
+	}
+	for tagKey, tagValue := range tagSetToAdd {
+		for _, res := range series.Results {
+			if _, ok := res.Group[tagKey]; ok {
+				return nil, fmt.Errorf("%s key already in group", tagKey)
+			}
+			res.Group[tagKey] = tagValue
+		}
+	}
+	return series, nil
+}
+
 func Ungroup(e *State, T miniprofiler.Timer, d *Results) (*Results, error) {
 	if len(d.Results) != 1 {
 		return nil, fmt.Errorf("ungroup: requires exactly one group")
 	}
-	d.Results[0].Group = nil
-	return d, nil
+	return &Results{
+		Results: ResultSlice{
+			&Result{
+				Value: Scalar(d.Results[0].Value.Value().(Number)),
+			},
+		},
+	}, nil
 }
 
 func Transpose(e *State, T miniprofiler.Timer, d *Results, gp string) (*Results, error) {

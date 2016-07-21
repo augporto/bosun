@@ -196,8 +196,8 @@ func vsphereDatastore(v *vsphere.Vsphere, md *opentsdb.MultiDataPoint, hostKey m
 			continue
 		}
 		tags := opentsdb.TagSet{
-			"disk": name,
-			"host": "",
+			"disk":    name,
+			"vcenter": v.Vcenter(),
 		}
 		var diskTotal, diskFree int64
 		for _, p := range r.Props {
