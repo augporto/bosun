@@ -278,6 +278,7 @@ func vsphereHost(v *vsphere.Vsphere, md *opentsdb.MultiDataPoint, cpuIntegrators
 		"summary.quickStats.uptime",             // seconds
 		"summary.hardware.otherIdentifyingInfo",
 		"summary.hardware.model",
+		"summary.hardware.cpuModel",
 	})
 	if err != nil {
 		return err
@@ -334,6 +335,8 @@ func vsphereHost(v *vsphere.Vsphere, md *opentsdb.MultiDataPoint, cpuIntegrators
 				switch p.Name {
 				case "summary.hardware.model":
 					metadata.AddMeta("", tags, "model", p.Val.Inner, false)
+				case "summary.hardware.cpuModel":
+					metadata.AddMeta("", tags, "CPU", p.Val.Inner, false)
 				}
 			case "ArrayOfHostSystemIdentificationInfo":
 				switch p.Name {
