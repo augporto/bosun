@@ -23,7 +23,7 @@ var (
 )
 
 // Vsphere registers a vSphere collector.
-func Vsphere(user, pwd, host string, perfmetrics []string) error {
+func Vsphere(user, pwd, host, clientUID string, perfmetrics []string) error {
 	if host == "" || user == "" || pwd == "" {
 		return fmt.Errorf("empty Host, User, or Password in Vsphere")
 	}
@@ -36,7 +36,7 @@ func Vsphere(user, pwd, host string, perfmetrics []string) error {
 	}
 	collectors = append(collectors, &IntervalCollector{
 		F: func() (opentsdb.MultiDataPoint, error) {
-			return c_vsphere(user, pwd, host, cpuIntegrators)
+			return c_vsphere(user, pwd, host, clientUID, cpuIntegrators)
 		},
 		name: fmt.Sprintf("vsphere-%s", host),
 	})
@@ -52,7 +52,7 @@ func vphereAddPerformanceMetricFilter(s string) error {
 	return nil
 }
 
-func c_vsphere(user, pwd, host string, cpuIntegrators map[string]tsIntegrator) (opentsdb.MultiDataPoint, error) {
+func c_vsphere(user, pwd, host, clientUID string, cpuIntegrators map[string]tsIntegrator) (opentsdb.MultiDataPoint, error) {
 	v, err := vsphere.Connect(host, user, pwd)
 	if err != nil {
 		return nil, err
@@ -64,10 +64,10 @@ func c_vsphere(user, pwd, host string, cpuIntegrators map[string]tsIntegrator) (
 	if err := vsphereStores(v, storeKey); err != nil {
 		slog.Errorf("vsphere: couldn't get Datastores for %v: %v", host, err)
 	}
-	if err := vsphereHost(v, &md, cpuIntegrators, hostKey, storeKey); err != nil {
+	if err := vsphereHost(clientUID,v, &md, cpuIntegrators, hostKey, storeKey); err != nil {
 		return nil, err
 	}
-	if err := vsphereDatastore(v, &md, hostKey); err != nil {
+	if err := vsphereDatastore(clientUID, v, &md, hostKey); err != nil {
 		return nil, err
 	}
 	if err := vsphereGuest(util.Clean(host), v, &md, storeKey); err != nil {
@@ -167,7 +167,7 @@ func vsphereStores(v *vsphere.Vsphere, storeKey map[string]string) error {
 	return nil
 }
 
-func vsphereDatastore(v *vsphere.Vsphere, md *opentsdb.MultiDataPoint, hostKey map[string]string) error {
+func vsphereDatastore(clientUID string, v *vsphere.Vsphere, md *opentsdb.MultiDataPoint, hostKey map[string]string) error {
 	res, err := v.Info("Datastore", []string{
 		"name",
 		"host",
@@ -252,7 +252,7 @@ func vsphereDatastore(v *vsphere.Vsphere, md *opentsdb.MultiDataPoint, hostKey m
 		if err != nil {
 			slog.Errorf("error marshaling datastores for host %v: %v", host, err)
 		}
-		metadata.AddMeta("", opentsdb.TagSet{"host": host, "vcenter": v.Vcenter()}, "dataStores", string(j), false)
+		metadata.AddMeta("", opentsdb.TagSet{"host": host, "vcenter": v.Vcenter(), "client_id": clientUID,}, "dataStores", string(j), false)
 	}
 	return Error
 }
@@ -266,7 +266,7 @@ type HostSystemIdentificationInfo struct {
 	} `xml:"identifierType"`
 }
 
-func vsphereHost(v *vsphere.Vsphere, md *opentsdb.MultiDataPoint, cpuIntegrators map[string]tsIntegrator, hostKey map[string]string, storeKey map[string]string) error {
+func vsphereHost(clientUID string,v *vsphere.Vsphere, md *opentsdb.MultiDataPoint, cpuIntegrators map[string]tsIntegrator, hostKey map[string]string, storeKey map[string]string) error {
 	res, err := v.Info("HostSystem", []string{
 		"name",
 		"summary.hardware.cpuMhz",
@@ -303,6 +303,7 @@ func vsphereHost(v *vsphere.Vsphere, md *opentsdb.MultiDataPoint, cpuIntegrators
 		tags := opentsdb.TagSet{
 			"host":    name,
 			"vcenter": v.Vcenter(),
+			"client_id": clientUID,
 		}
 		var memTotal, memUsed int64
 		var cpuMhz, cpuCores, cpuUse int64
