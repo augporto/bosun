@@ -336,7 +336,7 @@ func vsphereHost(v *vsphere.Vsphere, md *opentsdb.MultiDataPoint, cpuIntegrators
 				case "summary.hardware.model":
 					metadata.AddMeta("", tags, "model", p.Val.Inner, false)
 				case "summary.hardware.cpuModel":
-					metadata.AddMeta("", tags, "CPU", p.Val.Inner, false)
+					metadata.AddMeta("", tags, "cpu", p.Val.Inner, false)
 				}
 			case "ArrayOfHostSystemIdentificationInfo":
 				switch p.Name {
