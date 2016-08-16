@@ -252,7 +252,7 @@ func vsphereDatastore(v *vsphere.Vsphere, md *opentsdb.MultiDataPoint, hostKey m
 		if err != nil {
 			slog.Errorf("error marshaling datastores for host %v: %v", host, err)
 		}
-		metadata.AddMeta("", opentsdb.TagSet{"host": host}, "dataStores", string(j), false)
+		metadata.AddMeta("", opentsdb.TagSet{"host": host, "vcenter": v.Vcenter()}, "dataStores", string(j), false)
 	}
 	return Error
 }
